@@ -9,22 +9,24 @@ import requests
 from pathlib import Path
 from urllib.parse import urlparse
 
-from llama_index import ServiceContext, StorageContext
-from llama_index import set_global_service_context
-from llama_index import VectorStoreIndex, SimpleDirectoryReader, Document
-from llama_index.llms import OpenAI
-from llama_index.readers.file.flat_reader import FlatReader
-from llama_index.vector_stores import MilvusVectorStore
-from llama_index.embeddings import HuggingFaceEmbedding
-from llama_index.node_parser.text import SentenceWindowNodeParser
+from llama_index.core import ServiceContext, StorageContext
+from llama_index.core import set_global_service_context
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Document
+from llama_index.llms.huggingface import HuggingFaceLLM
+from llama_index.llms.openai import OpenAI
+from llama_index.readers.file.flat import FlatReader
+from llama_index.vector_stores.milvus import MilvusVectorStore
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# from llama_index.legacy.node_parser.text.sentence_window import SentenceWindowNodeParser
 
-from llama_index.prompts import ChatPromptTemplate, ChatMessage, MessageRole, PromptTemplate
-from llama_index.postprocessor import MetadataReplacementPostProcessor
-from llama_index.postprocessor import SentenceTransformerRerank
-#from llama_index.indices import ZillizCloudPipelineIndex
+from llama_index.core.prompts.base import ChatPromptTemplate, PromptTemplate
+from llama_index.core.base.llms.types import ChatMessage, MessageRole
+from llama_index.core.postprocessor import MetadataReplacementPostProcessor
+from llama_index.core.postprocessor import SentenceTransformerRerank
+# from llama_index.indices import ZillizCloudPipelineIndex
 from custom.zilliz.base import ZillizCloudPipelineIndex
-from llama_index.indices.query.schema import QueryBundle
-from llama_index.schema import BaseNode, ImageNode, MetadataMode
+from llama_index.core import QueryBundle
+from llama_index.core.schema import BaseNode, ImageNode, MetadataMode
 
 from custom.history_sentence_window import HistorySentenceWindowNodeParser
 from custom.llms.QwenLLM import QwenUnofficial
@@ -44,7 +46,7 @@ QA_PROMPT_TMPL_STR = (
 
 QA_SYSTEM_PROMPT = "你是一个严谨的历史知识问答智能体，你会仔细阅读历史材料并给出准确的回答,你的回答都会非常准确，因为你在回答的之后，使用在《书名》[]内给出原文用来支撑你回答的证据.并且你会在开头说明原文是否有回答所需的知识"
 
-REFINE_PROMPT_TMPL_STR = ( 
+REFINE_PROMPT_TMPL_STR = (
     "你是一个历史知识回答修正机器人，你严格按以下方式工作"
     "1.只有原答案为不知道时才进行修正,否则输出原答案的内容\n"
     "2.修正的时候为了体现你的精准和客观，你非常喜欢使用《书名》[]将原文展示出来.\n"
@@ -55,12 +57,14 @@ REFINE_PROMPT_TMPL_STR = (
     "新答案: "
 )
 
+
 def is_valid_url(url):
     try:
         result = urlparse(url)
         return all([result.scheme, result.netloc])
     except ValueError:
         return False
+
 
 def is_github_folder_url(url):
     return url.startswith('https://raw.githubusercontent.com/') and '.' not in os.path.basename(url)
@@ -72,6 +76,7 @@ def get_branch_head_sha(owner, repo, branch):
     data = response.json()
     sha = data['object']['sha']
     return sha
+
 
 def get_github_repo_contents(repo_url):
     # repo_url example: https://raw.githubusercontent.com/wxywb/history_rag/master/data/history_24/
@@ -98,6 +103,7 @@ def get_github_repo_contents(repo_url):
         print(f"Failed to fetch contents. Error: {str(e)}")
     return []
 
+
 class Executor:
     def __init__(self, model):
         pass
@@ -107,13 +113,13 @@ class Executor:
 
     def build_query_engine(self):
         pass
-     
+
     def delete_file(self, path):
         pass
-    
+
     def query(self, question):
         pass
- 
+
 
 class MilvusExecutor(Executor):
     def __init__(self, config):
@@ -124,20 +130,55 @@ class MilvusExecutor(Executor):
             sentence_splitter=lambda text: re.findall("[^,.;。？！]+[,.;。？！]?", text),
             window_size=config.milvus.window_size,
             window_metadata_key="window",
-            original_text_metadata_key="original_text",)
+            original_text_metadata_key="original_text", )
 
         embed_model = HuggingFaceEmbedding(model_name=config.embedding.name)
 
         # 使用Qwen 通义千问模型
-        if config.llm.name.find("qwen") != -1:
-            llm = QwenUnofficial(temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
-        elif config.llm.name.find("gemini") != -1:
-            llm = Gemini(temperature=config.llm.temperature, model_name=config.llm.name, max_tokens=2048)
-        else:
-            api_base = None
-            if 'api_base' in config.llm:
-                api_base = config.llm.api_base
-            llm = OpenAI(api_base = api_base, temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
+        # if config.llm.name.find("qwen") != -1:
+        #     llm = QwenUnofficial(temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
+        # elif config.llm.name.find("gemini") != -1:
+        #     llm = Gemini(temperature=config.llm.temperature, model_name=config.llm.name, max_tokens=2048)
+        # else:
+        #     api_base = None
+        #     if 'api_base' in config.llm:
+        #         api_base = config.llm.api_base
+        #     llm = OpenAI(api_base = api_base, temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
+
+        # Transform a string into input zephyr-specific input
+        def completion_to_prompt(completion):
+            return f"<|system|>\n</s>\n<|user|>\n{completion}</s>\n<|assistant|>\n"
+
+        # Transform a list of chat messages into zephyr-specific input
+        def messages_to_prompt(messages):
+            prompt = ""
+            for message in messages:
+                if message.role == "system":
+                    prompt += f"<|system|>\n{message.content}</s>\n"
+                elif message.role == "user":
+                    prompt += f"<|user|>\n{message.content}</s>\n"
+                elif message.role == "assistant":
+                    prompt += f"<|assistant|>\n{message.content}</s>\n"
+
+            # ensure we start with a system prompt, insert blank if needed
+            if not prompt.startswith("<|system|>\n"):
+                prompt = "<|system|>\n</s>\n" + prompt
+
+            # add final assistant prompt
+            prompt = prompt + "<|assistant|>\n"
+
+            return prompt
+
+        llm = HuggingFaceLLM(
+            model_name="HuggingFaceH4/zephyr-7b-alpha",
+            tokenizer_name="HuggingFaceH4/zephyr-7b-alpha",
+            context_window=3900,
+            max_new_tokens=256,
+            generate_kwargs={"temperature": 0.7, "top_k": 50, "top_p": 0.95, "do_sample": True},
+            messages_to_prompt=messages_to_prompt,
+            completion_to_prompt=completion_to_prompt,
+            device_map="auto",
+        )
 
         service_context = ServiceContext.from_defaults(llm=llm, embed_model=embed_model)
         set_global_service_context(service_context)
@@ -146,27 +187,27 @@ class MilvusExecutor(Executor):
             model=config.rerank.name, top_n=rerank_k)
         self._milvus_client = None
         self._debug = False
-        
+
     def set_debug(self, mode):
         self._debug = mode
 
     def build_index(self, path, overwrite):
         config = self.config
         vector_store = MilvusVectorStore(
-            uri = f"http://{config.milvus.host}:{config.milvus.port}",
-            collection_name = config.milvus.collection_name,
+            uri=f"http://{config.milvus.host}:{config.milvus.port}",
+            collection_name=config.milvus.collection_name,
             overwrite=overwrite,
             dim=config.embedding.dim)
         self._milvus_client = vector_store.milvusclient
-         
+
         if path.endswith('.txt'):
             if os.path.exists(path) is False:
                 print(f'(rag) 没有找到文件{path}')
                 return
             else:
                 documents = FlatReader().load_data(Path(path))
-                documents[0].metadata['file_name'] = documents[0].metadata['filename'] 
-        elif os.path.isfile(path):           
+                documents[0].metadata['file_name'] = documents[0].metadata['filename']
+        elif os.path.isfile(path):
             print('(rag) 目前仅支持txt文件')
         elif os.path.isdir(path):
             if os.path.exists(path) is False:
@@ -184,8 +225,8 @@ class MilvusExecutor(Executor):
     def _get_index(self):
         config = self.config
         vector_store = MilvusVectorStore(
-            uri = f"http://{config.milvus.host}:{config.milvus.port}",
-            collection_name = config.milvus.collection_name,
+            uri=f"http://{config.milvus.host}:{config.milvus.port}",
+            collection_name=config.milvus.collection_name,
             dim=config.embedding.dim)
         self.index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
         self._milvus_client = vector_store.milvusclient
@@ -198,7 +239,7 @@ class MilvusExecutor(Executor):
             self.rerank_postprocessor,
             MetadataReplacementPostProcessor(target_metadata_key="window")
         ])
-        self.query_engine._retriever.similarity_top_k=config.milvus.retrieve_topk
+        self.query_engine._retriever.similarity_top_k = config.milvus.retrieve_topk
 
         message_templates = [
             ChatMessage(content=QA_SYSTEM_PROMPT, role=MessageRole.SYSTEM),
@@ -211,17 +252,22 @@ class MilvusExecutor(Executor):
         self.query_engine.update_prompts(
             {"response_synthesizer:text_qa_template": chat_template}
         )
-        self.query_engine._response_synthesizer._refine_template.conditionals[0][1].message_templates[0].content = REFINE_PROMPT_TMPL_STR
+        self.query_engine._response_synthesizer._refine_template.conditionals[0][1].message_templates[
+            0].content = REFINE_PROMPT_TMPL_STR
 
     def delete_file(self, path):
         config = self.config
         if self._milvus_client is None:
             self._get_index()
-        num_entities_prev = self._milvus_client.query(collection_name='history_rag',filter="",output_fields=["count(*)"])[0]["count(*)"]
+        num_entities_prev = \
+            self._milvus_client.query(collection_name='history_rag', filter="", output_fields=["count(*)"])[0][
+                "count(*)"]
         res = self._milvus_client.delete(collection_name=config.milvus.collection_name, filter=f"file_name=='{path}'")
-        num_entities = self._milvus_client.query(collection_name='history_rag',filter="",output_fields=["count(*)"])[0]["count(*)"]
+        num_entities = \
+            self._milvus_client.query(collection_name='history_rag', filter="", output_fields=["count(*)"])[0][
+                "count(*)"]
         print(f'(rag) 现有{num_entities}条，删除{num_entities_prev - num_entities}条数据')
-    
+
     def query(self, question):
         if self.index is None:
             self._get_index()
@@ -229,21 +275,23 @@ class MilvusExecutor(Executor):
             question = question[:-1]
         if self._debug is True:
             contexts = self.query_engine.retrieve(QueryBundle(question))
-            for i, context in enumerate(contexts): 
+            for i, context in enumerate(contexts):
                 print(f'{question}', i)
                 content = context.node.get_content(metadata_mode=MetadataMode.LLM)
                 print(content)
-            print('-------------------------------------------------------参考资料---------------------------------------------------------')
+            print(
+                '-------------------------------------------------------参考资料---------------------------------------------------------')
         response = self.query_engine.query(question)
         return response
+
 
 class PipelineExecutor(Executor):
     def __init__(self, config):
         self.ZILLIZ_CLUSTER_ID = os.getenv("ZILLIZ_CLUSTER_ID")
         self.ZILLIZ_TOKEN = os.getenv("ZILLIZ_TOKEN")
-        self.ZILLIZ_PROJECT_ID = os.getenv("ZILLIZ_PROJECT_ID") 
+        self.ZILLIZ_PROJECT_ID = os.getenv("ZILLIZ_PROJECT_ID")
         self.ZILLIZ_CLUSTER_ENDPOINT = f"https://{self.ZILLIZ_CLUSTER_ID}.api.gcp-us-west1.zillizcloud.com"
-    
+
         self.config = config
         if len(self.ZILLIZ_CLUSTER_ID) == 0:
             print('ZILLIZ_CLUSTER_ID 参数为空')
@@ -252,7 +300,7 @@ class PipelineExecutor(Executor):
         if len(self.ZILLIZ_TOKEN) == 0:
             print('ZILLIZ_TOKEN 参数为空')
             exit()
-        
+
         self.config = config
         self._debug = False
 
@@ -264,15 +312,15 @@ class PipelineExecutor(Executor):
             api_base = None
             if 'api_base' in config.llm:
                 api_base = config.llm.api_base
-            llm = OpenAI(api_base = api_base, temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
+            llm = OpenAI(api_base=api_base, temperature=config.llm.temperature, model=config.llm.name, max_tokens=2048)
 
         service_context = ServiceContext.from_defaults(llm=llm, embed_model=None)
         self.service_context = service_context
         set_global_service_context(service_context)
         self._initialize_pipeline(service_context)
 
-        #rerank_k = config.rerankl
-        #self.rerank_postprocessor = SentenceTransformerRerank(
+        # rerank_k = config.rerankl
+        # self.rerank_postprocessor = SentenceTransformerRerank(
         #    model="BAAI/bge-reranker-large", top_n=rerank_k)
 
     def set_debug(self, mode):
@@ -282,23 +330,23 @@ class PipelineExecutor(Executor):
         config = self.config
         try:
             self.index = ZillizCloudPipelineIndex(
-                project_id = self.ZILLIZ_PROJECT_ID,
+                project_id=self.ZILLIZ_PROJECT_ID,
                 cluster_id=self.ZILLIZ_CLUSTER_ID,
                 token=self.ZILLIZ_TOKEN,
                 collection_name=config.pipeline.collection_name,
                 service_context=service_context,
-             )
+            )
             if len(self._list_pipeline_ids()) == 0:
                 self.index.create_pipelines(
-                    metadata_schema={"digest_from":"VarChar"}, chunk_size=self.config.pipeline.chunk_size
+                    metadata_schema={"digest_from": "VarChar"}, chunk_size=self.config.pipeline.chunk_size
                 )
         except Exception as e:
             print('(rag) zilliz pipeline 连接异常', str(e))
             exit()
         try:
             self._milvus_client = MilvusClient(
-                uri=self.ZILLIZ_CLUSTER_ENDPOINT, 
-                token=self.ZILLIZ_TOKEN 
+                uri=self.ZILLIZ_CLUSTER_ENDPOINT,
+                token=self.ZILLIZ_TOKEN
             )
         except Exception as e:
             print('(rag) zilliz cloud 连接异常', str(e))
@@ -306,7 +354,8 @@ class PipelineExecutor(Executor):
     def build_index(self, path, overwrite):
         config = self.config
         if not is_valid_url(path) or 'github' not in path:
-            print('(rag) 不是一个合法的url，请尝试`https://raw.githubusercontent.com/wxywb/history_rag/master/data/history_24/baihuasanguozhi.txt`')
+            print(
+                '(rag) 不是一个合法的url，请尝试`https://raw.githubusercontent.com/wxywb/history_rag/master/data/history_24/baihuasanguozhi.txt`')
             return
         if overwrite == True:
             self._milvus_client.drop_collection(config.pipeline.collection_name)
@@ -331,7 +380,7 @@ class PipelineExecutor(Executor):
     def build_query_engine(self):
         config = self.config
         self.query_engine = self.index.as_query_engine(
-          search_top_k=config.pipeline.retrieve_topk)
+            search_top_k=config.pipeline.retrieve_topk)
         message_templates = [
             ChatMessage(content=QA_SYSTEM_PROMPT, role=MessageRole.SYSTEM),
             ChatMessage(
@@ -343,16 +392,20 @@ class PipelineExecutor(Executor):
         self.query_engine.update_prompts(
             {"response_synthesizer:text_qa_template": chat_template}
         )
-        self.query_engine._response_synthesizer._refine_template.conditionals[0][1].message_templates[0].content = REFINE_PROMPT_TMPL_STR
-
+        self.query_engine._response_synthesizer._refine_template.conditionals[0][1].message_templates[
+            0].content = REFINE_PROMPT_TMPL_STR
 
     def delete_file(self, path):
         config = self.config
         if self._milvus_client is None:
             self._get_index()
-        num_entities_prev = self._milvus_client.query(collection_name='history_rag',filter="",output_fields=["count(*)"])[0]["count(*)"]
+        num_entities_prev = \
+            self._milvus_client.query(collection_name='history_rag', filter="", output_fields=["count(*)"])[0][
+                "count(*)"]
         res = self._milvus_client.delete(collection_name=config.milvus.collection_name, filter=f"doc_name=='{path}'")
-        num_entities = self._milvus_client.query(collection_name='history_rag',filter="",output_fields=["count(*)"])[0]["count(*)"]
+        num_entities = \
+            self._milvus_client.query(collection_name='history_rag', filter="", output_fields=["count(*)"])[0][
+                "count(*)"]
         print(f'(rag) 现有{num_entities}条，删除{num_entities_prev - num_entities}条数据')
 
     def query(self, question):
@@ -362,11 +415,12 @@ class PipelineExecutor(Executor):
             question = question[:-1]
         if self._debug is True:
             contexts = self.query_engine.retrieve(QueryBundle(question))
-            for i, context in enumerate(contexts): 
+            for i, context in enumerate(contexts):
                 print(f'{question}', i)
                 content = context.node.get_content(metadata_mode=MetadataMode.LLM)
                 print(content)
-            print('-------------------------------------------------------参考资料---------------------------------------------------------')
+            print(
+                '-------------------------------------------------------参考资料---------------------------------------------------------')
         response = self.query_engine.query(question)
         return response
 
@@ -386,10 +440,10 @@ class PipelineExecutor(Executor):
         if response_dict["code"] != 200:
             raise RuntimeError(response_dict)
         pipeline_ids = []
-        for pipeline in response_dict['data']: 
-            if collection_name in  pipeline['name']:
+        for pipeline in response_dict['data']:
+            if collection_name in pipeline['name']:
                 pipeline_ids.append(pipeline['pipelineId'])
-            
+
         return pipeline_ids
 
     def _delete_pipeline_ids(self, pipeline_ids):
@@ -404,4 +458,3 @@ class PipelineExecutor(Executor):
             response = requests.delete(url, headers=headers)
             if response.status_code != 200:
                 raise RuntimeError(response.text)
-

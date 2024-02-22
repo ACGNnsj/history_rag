@@ -4,13 +4,13 @@ from typing import (
     Sequence,
 )
 
-from llama_index.bridge.pydantic import Field
-from llama_index.llms.base import (
+from llama_index.core.bridge.pydantic import Field
+from llama_index.legacy.llms.base import (
     llm_chat_callback,
     llm_completion_callback,
 )
-from llama_index.llms.llm import LLM
-from llama_index.llms.types import (
+from llama_index.legacy.llms.llm import LLM
+from llama_index.legacy.llms.types import (
     ChatMessage,
     ChatResponse,
     ChatResponseAsyncGen,
